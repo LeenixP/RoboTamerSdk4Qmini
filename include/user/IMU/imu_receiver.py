@@ -37,7 +37,7 @@ isrun = True
 def parse_opt(known=False):
     parser = argparse.ArgumentParser()
     # parser.add_argument('--debugs', type=bool, default=False, help='if debug info output in terminal ')
-    parser.add_argument('--port', type=str, default='/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0003-if00-port0', help='the models serial port receive data; example: '
+    parser.add_argument('--port', type=str, default='/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0', help='the models serial port receive data; example: '
                                                                  '    Windows: COM3'
                                                                  '    Linux: /dev/ttyUSB0')
 
@@ -49,7 +49,7 @@ def parse_opt(known=False):
     return receive_params
 
 
-def read_imu_data(port="/dev/ttyUSB0", baudrate=921600, timeout=1):
+def read_imu_data(port="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0", baudrate=921600, timeout=1):
     try:
         serial_ = serial.Serial(port=port, baudrate=baudrate, bytesize=EIGHTBITS, parity=PARITY_NONE,
                                 stopbits=STOPBITS_ONE,
@@ -185,4 +185,19 @@ def read_imu_data(port="/dev/ttyUSB0", baudrate=921600, timeout=1):
         
 
     return result
-# read_imu_data(port="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0003-if00-port0", baudrate=921600, timeout=1)
+
+# # 主程序入口
+# if __name__ == "__main__":
+#     opt = parse_opt()
+#     print(f"正在连接到设备: {opt.port}")
+#     print(f"波特率: {opt.bps}")
+#     print(f"超时: {opt.timeout}秒\n")
+
+#     try:
+#         result = read_imu_data(port=opt.port, baudrate=opt.bps, timeout=opt.timeout)
+#         print("\n接收到的数据:")
+#         print(result)
+#     except KeyboardInterrupt:
+#         print("\n用户中断")
+#     except Exception as e:
+#         print(f"\n错误: {e}")

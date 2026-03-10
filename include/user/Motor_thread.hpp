@@ -21,10 +21,10 @@ struct SerialGroup {
 class MotorController {
 public:
     std::vector<SerialGroup> serialGroups = {
-        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT9CC6WH-if03-port0", {0,5}},
-        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT9CC6WH-if01-port0", {1,6}},
-        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT9CC6WH-if00-port0", {2, 3, 4}},
-        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FT9CC6WH-if02-port0", {7, 8, 9}}
+        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBU5IKC-if03-port0", { 0, 5 }},      // CH4
+        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBU5IKC-if02-port0", { 1, 6 }},      // CH3
+        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBU5IKC-if00-port0", { 2, 3, 4 }},   // CH1
+        {"/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBU5IKC-if01-port0", { 7, 8, 9 }}    // CH2
     };
     MotorController() {
         InitializeSerialPorts();
@@ -80,10 +80,10 @@ public:
 
 public:
     /// Startq（0位偏移）： 左腿roll 内扣，则需增大，右腿内扣则需减小
-    std::array<float, 10> Startq ={0.65,  0.45 , 1.28,   0.86,  0.56,
-                                   0.8, 0.,  0.301131,  0.513495,  0.2};
+    // std::array<float, 10> Startq ={0.65,  0.45 , 1.28,   0.86,  0.56,  0.8, 0.,  0.301131,  0.513495,  0.2};
 
-    //    std::array<float, 10> Startq ={0.,  0. , 0,   0.0,  0.0, 0.0, -0.0,  0.0,  0.0,  0.0};
+    // std::array<float, 10> Startq = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    std::array<float, 10> Startq = { 0.13, 0.11, 0.58, 0.55, 0.10, 0.55, 0.16, 0.47, 0.05, 0.65 };
 
     std::array<MotorData, 10> allMotorData;
     float Speed_Ratio = 6.33;
@@ -95,32 +95,77 @@ public:
     const std::chrono::milliseconds saveInterval{4}; // 100ms保存一次
 
     void InitializeSerialPorts() {
-        for(std::vector<SerialGroup>::iterator group = serialGroups.begin(); group != serialGroups.end(); ++group) {
+        int groupIdx = 0;
+        const char* chNames[] = {"CH4", "CH3", "CH1", "CH2"};
+        for(std::vector<SerialGroup>::iterator group = serialGroups.begin(); group != serialGroups.end(); ++group, ++groupIdx) {
+            std::cout << "[DEBUG] Opening " << chNames[groupIdx] << " serial: " << group->port << std::endl;
+            std::cout << "[DEBUG]   motorIDs: ";
+            for(int id : group->motorIDs) std::cout << id << " ";
+            std::cout << std::endl;
+
+            // 检查串口设备是否存在
+            if(access(group->port, F_OK) != 0) {
+                std::cerr << "[ERROR] Serial device NOT FOUND: " << group->port << std::endl;
+            } else if(access(group->port, R_OK | W_OK) != 0) {
+                std::cerr << "[ERROR] Serial device NO PERMISSION: " << group->port << std::endl;
+            } else {
+                std::cout << "[DEBUG]   Device exists and accessible." << std::endl;
+            }
+
             std::unique_ptr<SerialPort> port = std::make_unique<SerialPort>(group->port);
             serialPorts.push_back(std::move(port));
+            std::cout << "[DEBUG]   SerialPort object created for " << chNames[groupIdx] << std::endl;
         }
     }
 
     template<int N>
     void RunThread() {
-
+        const char* chNames[] = {"CH4", "CH3", "CH1", "CH2"};
         SerialPort& serial = *serialPorts[N];
         ThreadData& td = threadData[N];
-        
+
+        std::cout << "[DEBUG] Thread " << N << " (" << chNames[N] << ") started, port: "
+                  << serialGroups[N].port << std::endl;
+
+        // 首次循环打印详细调试信息
+        bool firstLoop = true;
+
          while(running)
            {
             std::chrono::time_point<std::chrono::high_resolution_clock> start = std::chrono::high_resolution_clock::now();
-            
-            for(std::vector<int>::iterator motorID = serialGroups[N].motorIDs.begin(); 
+
+            for(std::vector<int>::iterator motorID = serialGroups[N].motorIDs.begin();
                 motorID != serialGroups[N].motorIDs.end(); ++motorID) {
                 MotorCmd cmd;
                 MotorData data;
-                
+
                 ConfigureMotorCommand(cmd, *motorID, current_cmd_);
+
+                if(firstLoop) {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    std::cout << "[DEBUG] " << chNames[N] << " | globalID=" << *motorID
+                              << " -> busID=" << cmd.id
+                              << " | mode=" << static_cast<int>(cmd.mode)
+                              << " | kp=" << cmd.kp << " kd=" << cmd.kd
+                              << " tau=" << cmd.tau << " q=" << cmd.q << " dq=" << cmd.dq
+                              << std::endl;
+                }
+
                 data.motorType = MotorType::GO_M8010_6;
                 serial.sendRecv(&cmd, &data);
+
+                if(firstLoop) {
+                    std::lock_guard<std::mutex> lock(printMutex);
+                    std::cout << "[DEBUG] " << chNames[N] << " | globalID=" << *motorID
+                              << " -> busID=" << CalculateChannelID(*motorID)
+                              << " | recv q=" << data.q << " dq=" << data.dq
+                              << " temp=" << data.temp
+                              << std::endl;
+                }
+
                 ParseMotorFeedback(data, *motorID);
             }
+            if(firstLoop) firstLoop = false;
             td.count++;
           }
     }
@@ -142,12 +187,14 @@ public:
     }
 
     int CalculateChannelID(int motorID) {
-        if (motorID == 1) return motorID - 1;
-        else if (motorID >= 2 && motorID <= 4) return motorID - 2;
-        else if (motorID == 5) return motorID - 4;
-        else if (motorID == 6) return motorID - 5;
-        else if (motorID >= 7 && motorID <= 9) return motorID - 7;
-        return motorID;
+        int busID;
+        if (motorID == 1) busID = motorID - 1;
+        else if (motorID >= 2 && motorID <= 4) busID = motorID - 2;
+        else if (motorID == 5) busID = motorID - 4;
+        else if (motorID == 6) busID = motorID - 5;
+        else if (motorID >= 7 && motorID <= 9) busID = motorID - 7;
+        else busID = motorID;
+        return busID;
     }
 
     bool IsSpecialMotor(int motorID) const {
