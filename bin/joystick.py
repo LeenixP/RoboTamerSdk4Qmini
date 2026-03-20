@@ -101,6 +101,8 @@ class JoyStick:
 
                     elif event.type == evdev.ecodes.EV_KEY:
                         v = event.value  # 1=pressed, 0=released
+                        if v == 1:
+                            print(f"[JOY_RAW] Button pressed: code={event.code}")
                         if event.code == BTN_A:
                             self.butA = v
                         elif event.code == BTN_B:
@@ -121,6 +123,8 @@ class JoyStick:
                             self.SELECT = v
                         elif event.code == BTN_START:
                             self.START = v
+                        elif v == 1:
+                            print(f"[JOY_WARN] Unmapped button: code={event.code}")
         except OSError:
             # 手柄断开
             print("[JOYSTICK] Device disconnected, will retry...")

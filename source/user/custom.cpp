@@ -3,6 +3,7 @@
 //
 
 #include "user/custom.hpp"
+#include <iomanip>
 
 
 void G1::ModeProcess() {
@@ -27,6 +28,28 @@ void G1::Control() {
     relative_time += control_dt_;
     float ratio = fmin(relative_time / MOVE_DURATION, 1.f);
     rlController->convert_dds_state2rl_state();
+    
+    // Debug: 每100次循环打印详细控制状态
+    static int control_debug_counter = 0;
+    if (control_debug_counter++ % 100 == 0 && current_mode >= '2') {
+        std::cout << "[CTRL_DEBUG] mode=" << current_mode 
+                  << " time=" << std::fixed << std::setprecision(2) << relative_time
+                  << " ratio=" << ratio << std::endl;
+        std::cout << "[CTRL_DEBUG] joint_act: " << rlController->joint_act.transpose() << std::endl;
+        std::cout << "[CTRL_DEBUG] joint_pos: " << rlController->joint_pos.transpose() << std::endl;
+        std::cout << "[CTRL_DEBUG] base_rpy: " << rlController->base_rpy.transpose() * 180/M_PI << " deg" << std::endl;
+        std::cout << "[CTRL_DEBUG] target_cmd: " << rlController->target_command.transpose() << std::endl;
+        
+        // 计算最大位置误差
+        float max_err = 0;
+        int max_idx = 0;
+        for (int i = 0; i < 10; i++) {
+            float err = std::abs(rlController->joint_act[i] - rlController->joint_pos[i]);
+            if (err > max_err) { max_err = err; max_idx = i; }
+        }
+        std::cout << "[CTRL_DEBUG] max_pos_err: " << max_err << " rad @ joint " << max_idx << std::endl;
+    }
+    
     switch (current_mode) {
         case 'q':
             rlController->_kp.setZero();
