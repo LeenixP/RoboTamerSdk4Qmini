@@ -15,7 +15,7 @@ void G1::ModeProcess() {
     }
     if (selected_mode != current_mode) {
         ModeSwitcher::print_selected_mode(selected_mode);
-        /// mode transition
+        std::cout << "[INFO] Mode change: '" << current_mode << "' -> '" << selected_mode << "'" << std::endl;
         relative_time = 0.;
         current_mode = selected_mode;
         rlController->reset(_is_test_local);
@@ -35,23 +35,28 @@ void G1::Control() {
             usleep(1e3);
             exit(1);
         case '2':
-            ///to stand
             rlController->stand_control(ratio);
             break;
         case '3':
-            ///rl
-            rlController->rl_control();
-            if (rlController->counter_rl < 2)
-                rlController->stand_control(ratio);
+            if (rlController->_emergency_stop) {
+                if (control_count % 300 == 0) {
+                    std::cerr << "[SAFETY] *** EMERGENCY STOP ACTIVE ***" << std::endl;
+                    std::cerr << "[SAFETY] Press '2' to reset and resume standing" << std::endl;
+                    std::cerr << "[SAFETY] Position error exceeded threshold" << std::endl;
+                }
+            } else {
+                rlController->rl_control();
+                if (rlController->counter_rl < 2)
+                    rlController->stand_control(ratio);
+            }
             break;
         case '5':
-            // sin test (select)
             if (rlController->configParams.use_sim_gait)
                 rlController->sim_gait_control();
             else
                 rlController->sin_control(0.2, 2., relative_time);
             break;
-        default: /// case '1'
+        default:
             rlController->stand_control(ratio);
             break;
     }
@@ -59,8 +64,8 @@ void G1::Control() {
     control_count++;
     if (control_count % 150 == 0) {
         control_count = 0;
-        cout << "q: " << rlController->joint_pos.transpose() << endl;
-//        cout << "rpy: " << rlController->base_rpy.transpose() << endl;
+        std::cout << "[STATE] q: " << rlController->joint_pos.transpose() << std::endl;
+        std::cout << "[STATE] rpy: " << rlController->base_rpy.transpose() << " rad" << std::endl;
     }
 }
 

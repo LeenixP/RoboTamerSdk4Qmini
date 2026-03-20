@@ -13,6 +13,8 @@
 #include "unitree/g1/joystick.hpp"
 #include <time.h>
 #include <sys/time.h>
+#include <iomanip>
+#include <sstream>
 #include "joystick_reader.h"
 
 class RLController {
@@ -28,6 +30,18 @@ public:
     vector <vector<float>> sim_gait_data;
     float _record_yaw = 0.;
     float static_flag = 0.f;
+
+    float MAX_JOINT_VELOCITY;
+    float MAX_POSITION_ERROR;
+    float MAX_NETWORK_OUTPUT;
+    int MAX_CONSEC_ERRORS;
+    float TRANSITION_DURATION;
+
+    bool  _emergency_stop      = false;
+    int   _consecutive_errors  = 0;
+    Vec10<float> _last_joint_act;
+    float _transition_progress = 0.0f;
+    bool  _in_transition       = false;
 
     static const int NUM_LEGS = 2;
     static const int NUM_JOINTS = 10;
@@ -73,6 +87,18 @@ private:
 
     float smallest_signed_angle_between(float alpha, float beta);
 
+    void log_debug(const char* tag, const std::string& msg);
+    void log_info(const char* tag, const std::string& msg);
+    void log_warn(const char* tag, const std::string& msg);
+    void log_error(const char* tag, const std::string& msg);
+    std::string format_vec10(const Vec10<float>& v, int precision = 3);
+    std::string format_vec3(const Vec3<float>& v, int precision = 3);
+    std::string get_timestamp();
+
+    bool check_network_output_safe(const Matrix<float, Dynamic, 1> &output);
+    bool check_position_error_safe();
+    void limit_joint_velocity();
+
     void joint_increment_control(Matrix<float, Dynamic, 1> increment);
 
     void compute_pm_phase(Vec2<float> f);
@@ -109,6 +135,8 @@ public:
     void sim_gait_control();
 
     void reset(bool is_test_local);
+
+    void begin_transition();
 
     void stand_control(float ratio);
 

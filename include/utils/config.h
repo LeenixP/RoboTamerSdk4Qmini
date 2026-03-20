@@ -41,6 +41,12 @@ public:
         act_pos_low = params["act_pos_low"].as < std::vector < float > > ();
 
         ref_joint_act = params["ref_joint_act"].as < std::vector < float > > ();
+
+        max_joint_velocity = params["max_joint_velocity"].as<float>();
+        max_position_error = params["max_position_error"].as<float>();
+        max_network_output = params["max_network_output"].as<float>();
+        max_consecutive_errors = params["max_consecutive_errors"].as<int>();
+        transition_duration = params["transition_duration"].as<float>();
     }
 
 public:
@@ -70,6 +76,12 @@ public:
     std::vector<float> act_pos_low = {0.};
 
     std::vector<float> ref_joint_act = {0.};
+
+    float max_joint_velocity = 5.0f;
+    float max_position_error = 0.5f;
+    float max_network_output = 50.0f;
+    int max_consecutive_errors = 3;
+    float transition_duration = 0.3f;
 
 };
 

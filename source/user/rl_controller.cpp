@@ -1,5 +1,6 @@
 #include "user/rl_controller.h"
 #include <algorithm>
+#include <chrono>
 
 void RLController::init() {
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "q1");
@@ -34,7 +35,15 @@ void RLController::init() {
         _kp_soft[i] = configParams.kp_soft.at(i);
         _kd_soft[i] = configParams.kd_soft.at(i);
     }
+
+    MAX_JOINT_VELOCITY = configParams.max_joint_velocity;
+    MAX_POSITION_ERROR = configParams.max_position_error;
+    MAX_NETWORK_OUTPUT = configParams.max_network_output;
+    MAX_CONSEC_ERRORS = configParams.max_consecutive_errors;
+    TRANSITION_DURATION = configParams.transition_duration;
+
     joint_act = _ref_joint_act;
+    _last_joint_act = _ref_joint_act;
     observation.resize(onnxInference.input_dim * onnxInference.stack_dim);
     observation.setZero();
     obs_stack.resize(onnxInference.stack_dim);
@@ -49,6 +58,11 @@ void RLController::reset(bool is_test_local) {
     target_command.setZero();
     _is_first_run = true;
     counter_rl = 0;
+    _emergency_stop     = false;
+    _consecutive_errors = 0;
+    _transition_progress = 0.0f;
+    _in_transition       = true;
+    
     if (is_test_local) {
         init_joint_act = joint_act;
         joint_pos = joint_act;
@@ -56,20 +70,79 @@ void RLController::reset(bool is_test_local) {
         convert_dds_state2rl_state();
         joint_act = joint_pos;
         init_joint_act = joint_pos;
-        _record_yaw = base_rpy[2];//todo
-        cout << "Reset done! Rpy: " << base_rpy.transpose() << endl;
+        _last_joint_act = joint_pos;
+        _record_yaw = base_rpy[2];
+        
+        log_info("RESET", "Controller reset complete");
+        log_info("RESET", "joint_pos: " + format_vec10(joint_pos));
+        log_info("RESET", "base_rpy: " + format_vec3(base_rpy) + " (deg: " + 
+                 std::to_string(base_rpy[0] * 180 / M_PI).substr(0, 6) + ", " +
+                 std::to_string(base_rpy[1] * 180 / M_PI).substr(0, 6) + ", " +
+                 std::to_string(base_rpy[2] * 180 / M_PI).substr(0, 6) + ")");
+        log_info("RESET", "Safety params: MAX_POS_ERR=" + std::to_string(MAX_POSITION_ERROR) + 
+                 " MAX_JOINT_VEL=" + std::to_string(MAX_JOINT_VELOCITY));
     }
     auto o = get_observation();
 }
 
 
 void RLController::rl_control() {
+    if (_emergency_stop) return;
+
     counter_rl++;
+    _rl_time_step = get_true_loop_period();
+
+    if (_in_transition) {
+        _transition_progress += _rl_time_step / TRANSITION_DURATION;
+        if (_transition_progress >= 1.0f) {
+            _transition_progress = 1.0f;
+            _in_transition = false;
+            log_info("RL", "Transition completed, entering full RL control");
+        }
+    }
+
     Matrix<float, Dynamic, 1> net_out;
     net_out = onnxInference.inference(motion_session, get_observation());
+
+    if (!check_network_output_safe(net_out)) {
+        _consecutive_errors++;
+        log_error("SAFETY", "Network output unsafe, consecutive_errors=" + std::to_string(_consecutive_errors));
+        if (_consecutive_errors >= MAX_CONSEC_ERRORS) {
+            _emergency_stop = true;
+            log_error("SAFETY", "EMERGENCY STOP triggered: too many consecutive errors");
+        }
+        return;
+    }
+    _consecutive_errors = 0;
+
     action_increment = transform(net_out);
+    if (_in_transition)
+        action_increment.segment(NUM_LEGS, NUM_ACTUAT_JOINTS) *= _transition_progress;
+
     joint_increment_control(action_increment);
-    _rl_time_step = get_true_loop_period();
+
+    limit_joint_velocity();
+
+    if (!check_position_error_safe()) {
+        _emergency_stop = true;
+        log_error("SAFETY", "EMERGENCY STOP triggered: position error exceeded " + std::to_string(MAX_POSITION_ERROR) + " rad");
+        log_error("SAFETY", "joint_act: " + format_vec10(joint_act));
+        log_error("SAFETY", "joint_pos: " + format_vec10(joint_pos));
+    }
+    
+    // 每500次循环记录一次状态摘要
+    if (counter_rl % 500 == 0) {
+        float max_err = 0;
+        int max_err_idx = 0;
+        for (int i = 0; i < NUM_JOINTS; i++) {
+            float err = std::abs(joint_act[i] - joint_pos[i]);
+            if (err > max_err) { max_err = err; max_err_idx = i; }
+        }
+        log_info("RL", "Status: counter=" + std::to_string(counter_rl) + 
+                 " dt=" + std::to_string(_rl_time_step * 1000).substr(0, 5) + "ms" +
+                 " max_pos_err=" + std::to_string(max_err).substr(0, 5) + "rad@joint" + std::to_string(max_err_idx) +
+                 " cmd=" + std::to_string(target_command[0]).substr(0, 5) + "," + std::to_string(target_command[1]).substr(0, 5));
+    }
 }
 
 void RLController::joint_increment_control(Matrix<float, Dynamic, 1> increment) {
@@ -162,15 +235,21 @@ void RLController::joystick_command_process() {
 void RLController::set_rl_joint_act2dds_motor_command(char mode) {
     MotorCommand motor_command_tmp;
     for (int i = 0; i < NUM_JOINTS; ++i) {
-        motor_command_tmp.q_target[i] = joint_act[jointIndex2Sim[i]];
-        if (mode=='q') {
+        if (_emergency_stop) {
+            // 紧急停止：保持当前位置，低增益
+            motor_command_tmp.q_target[i] = joint_pos[jointIndex2Sim[i]];
+            motor_command_tmp.kp[i] = 0.5;
+            motor_command_tmp.kd[i] = 0.1;
+        } else if (mode == 'q') {
+            motor_command_tmp.q_target[i] = joint_act[jointIndex2Sim[i]];
             motor_command_tmp.kp[i] = 0.;
             motor_command_tmp.kd[i] = 0.;
-        } else if (mode=='1') {
+        } else if (mode == '1') {
+            motor_command_tmp.q_target[i] = joint_act[jointIndex2Sim[i]];
             motor_command_tmp.kp[i] = _kp_soft[jointIndex2Sim[i]];
             motor_command_tmp.kd[i] = _kd_soft[jointIndex2Sim[i]];
-        }
-        else {
+        } else {
+            motor_command_tmp.q_target[i] = joint_act[jointIndex2Sim[i]];
             motor_command_tmp.kp[i] = _kp[jointIndex2Sim[i]];
             motor_command_tmp.kd[i] = _kd[jointIndex2Sim[i]];
         }
@@ -324,6 +403,47 @@ Vec4<float> RLController::rpy_to_quat(const Vec3<float> &rpy) {
     return q;
 }
 
+bool RLController::check_network_output_safe(const Matrix<float, Dynamic, 1> &output) {
+    for (int i = 0; i < output.size(); i++) {
+        if (std::isnan(output(i)) || std::isinf(output(i))) {
+            cerr << "[SAFETY] Network output NaN/Inf at index " << i << endl;
+            return false;
+        }
+        if (std::abs(output(i)) > MAX_NETWORK_OUTPUT) {
+            cerr << "[SAFETY] Network output too large: " << output(i) << " at index " << i << endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool RLController::check_position_error_safe() {
+    for (int i = 0; i < NUM_JOINTS; i++) {
+        float err = std::abs(joint_act[i] - joint_pos[i]);
+        if (err > MAX_POSITION_ERROR) {
+            cerr << "[SAFETY] Position error too large at joint " << i
+                 << ": " << err << " rad" << endl;
+            return false;
+        }
+    }
+    return true;
+}
+
+void RLController::limit_joint_velocity() {
+    float max_delta = MAX_JOINT_VELOCITY * _rl_time_step;
+    for (int i = 0; i < NUM_JOINTS; i++) {
+        float delta = joint_act[i] - _last_joint_act[i];
+        if (std::abs(delta) > max_delta)
+            joint_act[i] = _last_joint_act[i] + std::copysign(max_delta, delta);
+    }
+    _last_joint_act = joint_act;
+}
+
+void RLController::begin_transition() {
+    _transition_progress = 0.0f;
+    _in_transition = true;
+}
+
 Vec4<float> RLController::quat_mul(Vec4<float> a, Vec4<float> b) {
     float x1 = a[1];
     float y1 = a[2];
@@ -349,4 +469,51 @@ Vec4<float> RLController::quat_mul(Vec4<float> a, Vec4<float> b) {
     Vec4<float> quat(w, x, y, z);
 
     return quat;
+}
+
+std::string RLController::get_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()) % 1000;
+    auto timer = std::chrono::system_clock::to_time_t(now);
+    std::tm bt = *std::localtime(&timer);
+    std::ostringstream oss;
+    oss << std::put_time(&bt, "%Y-%m-%d %H:%M:%S") << "." 
+        << std::setfill('0') << std::setw(3) << ms.count();
+    return oss.str();
+}
+
+std::string RLController::format_vec10(const Vec10<float>& v, int precision) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(precision);
+    oss << "[";
+    for (int i = 0; i < 10; i++) {
+        if (i > 0) oss << ", ";
+        oss << v[i];
+    }
+    oss << "]";
+    return oss.str();
+}
+
+std::string RLController::format_vec3(const Vec3<float>& v, int precision) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(precision);
+    oss << "[" << v[0] << ", " << v[1] << ", " << v[2] << "]";
+    return oss.str();
+}
+
+void RLController::log_debug(const char* tag, const std::string& msg) {
+    std::cout << "[" << get_timestamp() << "] [DEBUG] [" << tag << "] " << msg << std::endl;
+}
+
+void RLController::log_info(const char* tag, const std::string& msg) {
+    std::cout << "[" << get_timestamp() << "] [INFO] [" << tag << "] " << msg << std::endl;
+}
+
+void RLController::log_warn(const char* tag, const std::string& msg) {
+    std::cerr << "[" << get_timestamp() << "] [WARN] [" << tag << "] " << msg << std::endl;
+}
+
+void RLController::log_error(const char* tag, const std::string& msg) {
+    std::cerr << "[" << get_timestamp() << "] [ERROR] [" << tag << "] " << msg << std::endl;
 }
