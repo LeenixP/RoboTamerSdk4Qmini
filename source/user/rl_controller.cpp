@@ -88,16 +88,33 @@ void RLController::reset(bool is_test_local) {
             }
         }
         
-        // 3. 如果接近限位，使用ref_joint_act作为起点（更安全）
+        // 3. 如果接近限位，调整 safe_joint_pos 使其远离限位
+        //    然后作为平滑过渡的起点（不再直接跳到 ref_joint_act！）
         if (near_limit) {
-            log_warn("RESET", "Joint " + std::to_string(near_limit_joint) + 
-                     " near limit detected, using ref_joint_act as starting point");
-            joint_act = _ref_joint_act;
-            init_joint_act = _ref_joint_act;
-        } else {
-            joint_act = safe_joint_pos;
-            init_joint_act = safe_joint_pos;
+            // 将关节位置向安全方向稍微移动，避免限位碰撞
+            for (int i = 0; i < NUM_JOINTS; i++) {
+                float dist_to_low = safe_joint_pos[i] - act_pos_low[i];
+                float dist_to_high = act_pos_high[i] - safe_joint_pos[i];
+                
+                // 如果接近下限位，向中间方向移动
+                if (dist_to_low < near_limit_distance) {
+                    safe_joint_pos[i] = act_pos_low[i] + near_limit_distance;
+                    log_warn("RESET", "Joint " + std::to_string(i) + " near low limit, adjusted +" + 
+                             std::to_string(near_limit_distance) + " rad");
+                }
+                // 如果接近上限位，向中间方向移动
+                else if (dist_to_high < near_limit_distance) {
+                    safe_joint_pos[i] = act_pos_high[i] - near_limit_distance;
+                    log_warn("RESET", "Joint " + std::to_string(i) + " near high limit, adjusted -" + 
+                             std::to_string(near_limit_distance) + " rad");
+                }
+            }
         }
+        
+        // 【重要】始终使用 safe_joint_pos 作为平滑过渡的起点
+        // 让 stand_control() 负责 3 秒的平滑过渡，而不是瞬间跳变
+        joint_act = safe_joint_pos;
+        init_joint_act = safe_joint_pos;
         
         _last_joint_act = joint_act;
         _record_yaw = base_rpy[2];
