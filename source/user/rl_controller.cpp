@@ -68,19 +68,52 @@ void RLController::reset(bool is_test_local) {
         joint_pos = joint_act;
     } else {
         convert_dds_state2rl_state();
-        joint_act = joint_pos;
-        init_joint_act = joint_pos;
-        _last_joint_act = joint_pos;
+        
+        // ========== 安全过渡逻辑 ==========
+        // 1. 将joint_pos限制在安全范围内
+        Vec10<float> safe_joint_pos = joint_pos.cwiseMax(act_pos_low).cwiseMin(act_pos_high);
+        
+        // 2. 检测是否接近限位边缘（距离限位小于0.15 rad = 8.6°）
+        bool near_limit = false;
+        int near_limit_joint = -1;
+        float near_limit_distance = 0.15f; // 0.15 rad ≈ 8.6°
+        
+        for (int i = 0; i < NUM_JOINTS; i++) {
+            float dist_to_low = joint_pos[i] - act_pos_low[i];
+            float dist_to_high = act_pos_high[i] - joint_pos[i];
+            if (dist_to_low < near_limit_distance || dist_to_high < near_limit_distance) {
+                near_limit = true;
+                near_limit_joint = i;
+                break;
+            }
+        }
+        
+        // 3. 如果接近限位，使用ref_joint_act作为起点（更安全）
+        if (near_limit) {
+            log_warn("RESET", "Joint " + std::to_string(near_limit_joint) + 
+                     " near limit detected, using ref_joint_act as starting point");
+            joint_act = _ref_joint_act;
+            init_joint_act = _ref_joint_act;
+        } else {
+            joint_act = safe_joint_pos;
+            init_joint_act = safe_joint_pos;
+        }
+        
+        _last_joint_act = joint_act;
         _record_yaw = base_rpy[2];
         
         log_info("RESET", "Controller reset complete");
         log_info("RESET", "joint_pos: " + format_vec10(joint_pos));
+        log_info("RESET", "joint_act: " + format_vec10(joint_act));
         log_info("RESET", "base_rpy: " + format_vec3(base_rpy) + " (deg: " + 
                  std::to_string(base_rpy[0] * 180 / M_PI).substr(0, 6) + ", " +
                  std::to_string(base_rpy[1] * 180 / M_PI).substr(0, 6) + ", " +
                  std::to_string(base_rpy[2] * 180 / M_PI).substr(0, 6) + ")");
         log_info("RESET", "Safety params: MAX_POS_ERR=" + std::to_string(MAX_POSITION_ERROR) + 
                  " MAX_JOINT_VEL=" + std::to_string(MAX_JOINT_VELOCITY));
+        if (near_limit) {
+            log_info("RESET", "SAFE_MODE: Started from ref_joint_act to avoid limit collision");
+        }
     }
     auto o = get_observation();
 }
