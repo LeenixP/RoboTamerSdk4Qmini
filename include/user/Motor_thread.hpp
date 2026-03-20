@@ -83,7 +83,7 @@ public:
     // std::array<float, 10> Startq ={0.65,  0.45 , 1.28,   0.86,  0.56,  0.8, 0.,  0.301131,  0.513495,  0.2};
 
     // std::array<float, 10> Startq = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    std::array<float, 10> Startq = { 0.13, 0.11, 0.58, 0.55, 0.10, 0.55, 0.16, 0.47, 0.05, 0.65 };
+    std::array<float, 10> Startq = { 0.119672, 0.212419, 0.58618, 0.493727, 0.115964, 0.562708, 0.00526843, 0.476245, 0.0409862, 0.664455 };
 
     std::array<MotorData, 10> allMotorData;
     float Speed_Ratio = 6.33;
